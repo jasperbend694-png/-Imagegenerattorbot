@@ -23,11 +23,11 @@ from telegram.constants import ParseMode
 # ── Configuration ──────────────────────────────────────────────
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 FAL_KEY = os.environ.get("FAL_KEY")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))  # Telegram numeric ID
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 DB_PATH = os.environ.get("DB_PATH", "bot_data.db")
 
 if not BOT_TOKEN or not FAL_KEY:
-    raise ValueError("BOT_TOKEN and FAL_KEY must be set")
+    raise ValueError("BOT_TOKEN and FAL_KEY must be set as environment variables")
 
 fal_client.api_key = FAL_KEY
 
@@ -70,16 +70,20 @@ def init_db():
 def db_register_user(user_id, username, first_name):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO users (user_id, username, first_name) VALUES (?, ?, ?)",
-              (user_id, username or "", first_name or ""))
+    c.execute(
+        "INSERT OR IGNORE INTO users (user_id, username, first_name) VALUES (?, ?, ?)",
+        (user_id, username or "", first_name or ""),
+    )
     conn.commit()
     conn.close()
 
 def db_log_generation(user_id, prompt, model="flux-schnell"):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("INSERT INTO generations (user_id, prompt, model) VALUES (?, ?, ?)",
-              (user_id, prompt, model))
+    c.execute(
+        "INSERT INTO generations (user_id, prompt, model) VALUES (?, ?, ?)",
+        (user_id, prompt, model),
+    )
     conn.commit()
     conn.close()
 
@@ -114,14 +118,17 @@ def db_daily_active():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     since = datetime.utcnow() - timedelta(days=1)
-    c.execute("SELECT COUNT(DISTINCT user_id) FROM generations WHERE created_at >= ?", (since,))
+    c.execute(
+        "SELECT COUNT(DISTINCT user_id) FROM generations WHERE created_at >= ?",
+        (since,),
+    )
     n = c.fetchone()[0]
     conn.close()
     return n
 
-# ── Rate limiting (simple per-user sliding window) ─────────────
-RATE_LIMIT_WINDOW = 60  # seconds
-RATE_LIMIT_MAX = 3      # max generations per window
+# ── Rate limiting ──────────────────────────────────────────────
+RATE_LIMIT_WINDOW = 60
+RATE_LIMIT_MAX = 3
 
 def check_rate_limit(user_id):
     conn = sqlite3.connect(DB_PATH)
@@ -138,17 +145,13 @@ def check_rate_limit(user_id):
     conn.close()
     return True
 
-# ── Deduplication (in‑memory) ──────────────────────────────────
+# ── Deduplication ──────────────────────────────────────────────
 active_requests = set()
 
-# ── Helper: generate image via fal.ai ──────────────────────────
-async def generate_image(prompt: str, size: str = "landscape_4_3"):
-    """Call fal.ai FLUX.1 [schnell] and return the image URL."""
-    # Validate prompt
+# ── Image generation ───────────────────────────────────────────
+async def generate_image(prompt: str):
     if not prompt or len(prompt) < 3 or len(prompt) > 1000:
         raise ValueError("Prompt must be between 3 and 1000 characters.")
-    
-    # Run blocking fal_client call in a thread to avoid blocking the event loop
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(
         None,
@@ -156,7 +159,7 @@ async def generate_image(prompt: str, size: str = "landscape_4_3"):
             "fal-ai/flux/schnell",
             arguments={
                 "prompt": prompt,
-                "image_size": size,
+                "image_size": "landscape_4_3",
                 "num_inference_steps": 4,
                 "num_images": 1,
                 "enable_safety_checker": True,
@@ -165,7 +168,7 @@ async def generate_image(prompt: str, size: str = "landscape_4_3"):
     )
     return result["images"][0]["url"]
 
-# ── Menu builders ──────────────────────────────────────────────
+# ── Keyboards ──────────────────────────────────────────────────
 def main_menu_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🎨 Generate Image", callback_data="menu_generate")],
@@ -186,7 +189,7 @@ def generate_again_keyboard():
         [InlineKeyboardButton("🔙 Main Menu", callback_data="back_menu")],
     ])
 
-# ── Command handlers ───────────────────────────────────────────
+# ── Commands ───────────────────────────────────────────────────
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     db_register_user(user.id, user.username, user.first_name)
@@ -199,16 +202,15 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "📖 **How to use this bot**\n\n"
-        "1. Tap **🎨 Generate Image** or send `/imagine`.\n"
+        "📖 *How to use this bot*\n\n"
+        "1. Tap *🎨 Generate Image* or send /imagine.\n"
         "2. Type a detailed description of the image you want.\n"
         "3. Wait a few seconds while the AI creates your image.\n"
-        "4. Receive your image and tap **Generate Another** if you like.\n\n"
-        "**Tips for better results:**\n"
+        "4. Receive your image and tap *Generate Another* if you like.\n\n"
+        "*Tips:*\n"
         "• Be specific (subject, style, lighting, colors).\n"
-        "• Include keywords like *photorealistic*, *anime*, *3D render*, *portrait*, *logo*.\n"
-        "• Avoid overly short or vague prompts.\n\n"
-        "**Commands:**\n"
+        "• Include keywords like photorealistic, anime, 3D render, portrait, logo.\n\n"
+        "*Commands:*\n"
         "/start – main menu\n"
         "/imagine – generate an image\n"
         "/help – this message\n"
@@ -221,25 +223,24 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_about(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "🤖 **AI Image Generator Bot**\n\n"
-        "Powered by **fal.ai** — FLUX.1 [schnell] model.\n\n"
-        "This bot is a demonstration project built with Python and "
-        "python-telegram-bot. All images are generated in real time; "
-        "no placeholder or fake responses are used.\n\n"
-        "Developer: @Imagegenerattorbot"
+        "🤖 *AI Image Generator Bot*\n\n"
+        "Powered by *fal.ai* — FLUX.1 [schnell] model.\n\n"
+        "All images are generated in real time; no placeholders.\n\n"
+        "Bot: @Imagegenerattorbot"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "⚙️ **Current Settings**\n\n"
+        "⚙️ *Current Settings*\n\n"
         "• Model: FLUX.1 [schnell]\n"
         "• Aspect ratio: Landscape 4:3 (default)\n"
         "• Quality: Standard (4 inference steps)\n"
-        "• Safety filter: On\n\n"
-        "Aspect‑ratio selection will be available in a future update."
+        "• Safety filter: On"
     )
-    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=back_to_menu_keyboard())
+    await update.message.reply_text(
+        text, parse_mode=ParseMode.MARKDOWN, reply_markup=back_to_menu_keyboard()
+    )
 
 async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -247,7 +248,7 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not rows:
         await update.message.reply_text("🖼 You haven't generated any images yet.")
         return
-    lines = ["🖼 **Your last 5 generations:**\n"]
+    lines = ["🖼 *Your last 5 generations:*\n"]
     for i, (prompt, created) in enumerate(rows, 1):
         short = prompt[:80] + ("…" if len(prompt) > 80 else "")
         lines.append(f"{i}. `{short}`\n   _{created}_")
@@ -260,13 +261,13 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_imagine(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["awaiting_prompt"] = True
     await update.message.reply_text(
-        "🎨 **Describe the image you want to generate:**\n\n"
+        "🎨 *Describe the image you want to generate:*\n\n"
         "Example: _A beautiful futuristic city at sunset, ultra-realistic 4K._\n\n"
         "Send /cancel to abort.",
         parse_mode=ParseMode.MARKDOWN,
     )
 
-# ── Admin commands ─────────────────────────────────────────────
+# ── Admin ──────────────────────────────────────────────────────
 def admin_only(func):
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -279,23 +280,20 @@ def admin_only(func):
 @admin_only
 async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "👑 **Admin Panel**\n\n"
+        "👑 *Admin Panel*\n\n"
         "/stats – bot statistics\n"
         "/broadcast <message> – send to all users\n"
-        "/daily – daily activity summary"
+        "/daily – daily activity"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 @admin_only
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    total_users = db_total_users()
-    total_images = db_total_images()
-    daily = db_daily_active()
     text = (
-        f"📊 **Bot Statistics**\n\n"
-        f"• Total users: {total_users}\n"
-        f"• Total images generated: {total_images}\n"
-        f"• Active users (last 24h): {daily}"
+        f"📊 *Bot Statistics*\n\n"
+        f"• Total users: {db_total_users()}\n"
+        f"• Total images generated: {db_total_images()}\n"
+        f"• Active users (last 24h): {db_daily_active()}"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
@@ -321,51 +319,47 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def cmd_daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    daily = db_daily_active()
-    await update.message.reply_text(f"📈 Active users in the last 24 hours: {daily}")
+    await update.message.reply_text(
+        f"📈 Active users in the last 24 hours: {db_daily_active()}"
+    )
 
-# ── Prompt handler (text message after /imagine or button) ─────
+# ── Prompt handler ─────────────────────────────────────────────
 async def handle_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("awaiting_prompt"):
         return
     context.user_data.pop("awaiting_prompt", None)
-    
+
     user_id = update.effective_user.id
     prompt = update.message.text.strip()
-    
-    # Validate prompt
+
     if len(prompt) < 3:
-        await update.message.reply_text("❌ Prompt too short. Please describe your image in at least 3 characters.")
+        await update.message.reply_text("❌ Prompt too short. Use at least 3 characters.")
         return
     if len(prompt) > 1000:
         await update.message.reply_text("❌ Prompt too long. Maximum 1000 characters.")
         return
-    
-    # Rate limit
+
     if not check_rate_limit(user_id):
         await update.message.reply_text(
-            f"⏳ Rate limit exceeded. You can generate at most {RATE_LIMIT_MAX} images per minute.\n"
-            "Please wait a moment and try again."
+            f"⏳ Rate limit exceeded: max {RATE_LIMIT_MAX} images/minute. Please wait."
         )
         return
-    
-    # Deduplication
+
     key = (user_id, hashlib.md5(prompt.encode()).hexdigest())
     if key in active_requests:
-        await update.message.reply_text("⏳ A generation with this prompt is already in progress. Please wait.")
+        await update.message.reply_text("⏳ A generation with this prompt is already running.")
         return
     active_requests.add(key)
-    
+
     status_msg = await update.message.reply_text("🎨 Generating your image… please wait.")
-    
+
     try:
         image_url = await asyncio.wait_for(generate_image(prompt), timeout=60.0)
-        # Download image bytes to send directly (avoids exposing fal CDN URL)
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(image_url)
             resp.raise_for_status()
             image_bytes = resp.content
-        
+
         await status_msg.delete()
         await update.message.reply_photo(
             photo=image_bytes,
@@ -375,82 +369,89 @@ async def handle_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         db_log_generation(user_id, prompt, "flux-schnell")
     except asyncio.TimeoutError:
-        await status_msg.edit_text("⏰ Generation timed out. Please try again with a shorter prompt.")
+        await status_msg.edit_text("⏰ Generation timed out. Please try again.")
     except ValueError as e:
         await status_msg.edit_text(f"❌ {e}")
     except fal_client.FalClientError as e:
         logger.error(f"fal.ai error: {e}")
         err = str(e).lower()
         if "credit" in err or "balance" in err or "quota" in err:
-            await status_msg.edit_text("💳 The bot's image-generation credits are exhausted. Please contact the admin.")
+            await status_msg.edit_text("💳 Bot credits exhausted. Contact the admin.")
         elif "rate" in err:
-            await status_msg.edit_text("⏳ The AI service is busy. Please wait a moment and try again.")
+            await status_msg.edit_text("⏳ AI service busy. Please retry.")
         elif "invalid" in err and "key" in err:
-            await status_msg.edit_text("🔑 Service configuration error. Please contact the admin.")
+            await status_msg.edit_text("🔑 Service configuration error. Contact the admin.")
         else:
-            await status_msg.edit_text("❌ Image generation failed. Please try again later.")
+            await status_msg.edit_text("❌ Generation failed. Please try again.")
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
-        await status_msg.edit_text("❌ An unexpected error occurred. Please try again.")
+        await status_msg.edit_text("❌ Unexpected error. Please try again.")
     finally:
         active_requests.discard(key)
 
-# ── Callback query handler (all inline buttons) ────────────────
+# ── Buttons ────────────────────────────────────────────────────
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-    
+
     if data == "back_menu":
         await query.edit_message_text(
-            "🏠 **Main Menu**\nChoose an option:",
+            "🏠 *Main Menu*\nChoose an option:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=main_menu_keyboard(),
         )
     elif data == "menu_generate":
         context.user_data["awaiting_prompt"] = True
         await query.edit_message_text(
-            "🎨 **Describe the image you want to generate:**\n\n"
+            "🎨 *Describe the image you want to generate:*\n\n"
             "Example: _A beautiful futuristic city at sunset, ultra-realistic 4K._\n\n"
             "Send /cancel to abort.",
             parse_mode=ParseMode.MARKDOWN,
         )
     elif data == "menu_history":
-        user_id = query.from_user.id
-        rows = db_get_history(user_id, 5)
+        rows = db_get_history(query.from_user.id, 5)
         if not rows:
             text = "🖼 You haven't generated any images yet."
         else:
-            lines = ["🖼 **Your last 5 generations:**\n"]
+            lines = ["🖼 *Your last 5 generations:*\n"]
             for i, (prompt, created) in enumerate(rows, 1):
                 short = prompt[:80] + ("…" if len(prompt) > 80 else "")
                 lines.append(f"{i}. `{short}`\n   _{created}_")
             text = "\n".join(lines)
-        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=back_to_menu_keyboard())
+        await query.edit_message_text(
+            text, parse_mode=ParseMode.MARKDOWN, reply_markup=back_to_menu_keyboard()
+        )
     elif data == "menu_settings":
         text = (
-            "⚙️ **Current Settings**\n\n"
+            "⚙️ *Current Settings*\n\n"
             "• Model: FLUX.1 [schnell]\n"
             "• Aspect ratio: Landscape 4:3\n"
             "• Quality: Standard\n"
             "• Safety filter: On"
         )
-        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=back_to_menu_keyboard())
+        await query.edit_message_text(
+            text, parse_mode=ParseMode.MARKDOWN, reply_markup=back_to_menu_keyboard()
+        )
     elif data == "menu_help":
         text = (
-            "📖 **How to use**\n\n"
-            "Tap **🎨 Generate Image**, then type your description.\n"
+            "📖 *How to use*\n\n"
+            "Tap *🎨 Generate Image*, then type your description.\n"
             "The AI will create an image and send it here.\n\n"
-            "Use /history to see your recent prompts."
+            "Use /history to see recent prompts."
         )
-        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=back_to_menu_keyboard())
+        await query.edit_message_text(
+            text, parse_mode=ParseMode.MARKDOWN, reply_markup=back_to_menu_keyboard()
+        )
     elif data == "menu_about":
         text = (
-            "🤖 **AI Image Generator Bot**\n\n"
+            "🤖 *AI Image Generator Bot*\n\n"
             "Powered by fal.ai — FLUX.1 [schnell].\n"
             "Real AI generation, no placeholders."
         )
-        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=back_to_menu_keyboard())
+        await query.edit_message_text(
+            text, parse_mode=ParseMode.MARKDOWN, reply_markup=back_to_menu_keyboard()
+        )
 
 # ── Error handler ──────────────────────────────────────────────
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -458,7 +459,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     if isinstance(update, Update) and update.effective_message:
         try:
             await update.effective_message.reply_text(
-                "⚠️ An unexpected error occurred. Please try again or /start."
+                "⚠️ An unexpected error occurred. Please try /start."
             )
         except Exception:
             pass
@@ -466,10 +467,8 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 # ── Main ───────────────────────────────────────────────────────
 def main():
     init_db()
-    
     app = Application.builder().token(BOT_TOKEN).build()
-    
-    # Commands
+
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("about", cmd_about))
@@ -477,22 +476,16 @@ def main():
     app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("imagine", cmd_imagine))
-    
-    # Admin
+
     app.add_handler(CommandHandler("admin", cmd_admin))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
     app.add_handler(CommandHandler("daily", cmd_daily))
-    
-    # Inline buttons
+
     app.add_handler(CallbackQueryHandler(button_handler))
-    
-    # Text prompts (only when awaiting)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_prompt))
-    
-    # Error handler
     app.add_error_handler(error_handler)
-    
+
     logger.info("Bot started (polling).")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
